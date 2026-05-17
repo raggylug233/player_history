@@ -398,8 +398,8 @@ select:focus { border-color: var(--border-glow); }
   </div>
 </div>
 
+<script src="data.js"></script>
 <script>
-let DATA = [];
 
 const ALLIANCE_COLORS = {
   DGS:'#00c8ff', HAR:'#ff6b35', XYZ:'#39ff14', B2A:'#ff3cac',
@@ -957,13 +957,7 @@ document.getElementById('mBtnLast').addEventListener('click', () => goPage(Math.
 let resizeTimer;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { page=1; renderCards(); }, 150); });
 
-fetch('data.json')
-  .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-  .then(data => { DATA = data; initFromData(); })
-  .catch(err => {
-    document.body.insertAdjacentHTML('beforeend',
-      '<div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#0f1b2d;border:1px solid #ff4444;color:#ff4444;padding:1em 1.5em;font-family:Share Tech Mono,monospace;z-index:9999">FAILED TO LOAD data.json: ' + err.message + '</div>');
-  });
+initFromData();
 </script>
 </body>
 </html>
