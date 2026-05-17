@@ -12,18 +12,18 @@ The dashboard is used by Steve (alliance leader of **BBL** in State 3174) for co
 
 ### Single-file HTML deliverable
 
-The entire app is a single self-contained HTML file (`index.html` / `power_levels_3174.html`). No build step, no external JS dependencies beyond Google Fonts. Data is embedded directly as a JavaScript constant.
+The app is a single HTML file (`index.html`) that loads its data from a sibling `data.js` (which defines `const DATA = [...]`). No build step, no external JS dependencies beyond Google Fonts.
 
 ```
-<source data .xlsx>
+3174 Power Levels.xlsx
         │
-        │  Python build script (one-time, before HTML edit)
+        │  python3 build_data.py
         ▼
-<grouped JSON with fuzzy-matched players, scores, sparklines>
+data.js  (const DATA = [...] — fuzzy-grouped players, scores, sparklines)
         │
-        │  Embedded as `const DATA = [...]` in HTML
+        │  loaded via <script src="data.js">
         ▼
-<index.html — fully self-contained, no server needed>
+index.html  (the dashboard, opens directly from disk)
 ```
 
 ### Data flow inside the page
@@ -160,9 +160,14 @@ combined_score = 0.5 × name_similarity      // difflib SequenceMatcher
 
 Names merge if `combined_score >= 0.82` AND `name_similarity >= 0.70` (quick filter).
 
-**Hard veto**: Two names that appear on the **same snapshot date** are never merged — they must be different players. This prevents false positives like `Lord R` and `LordRawl` (similar names, same alliance, but both appeared in Feb 8 snapshot so they can’t be the same person).
+**Hard vetos** (apply before scoring):
 
-**Known limitations** (`difflib.SequenceMatcher` at 0.80 threshold): misses stylistically dramatic name changes like `VICTØR DA VÏNCI` → `VICTØR SNØW`. Solution path when adding more data is a `manual_aliases` dict plus explicit deletion of bad fuzzy links.
+- **Same-date veto**: Two names that appear in the **same snapshot date** are never merged — one player can't be listed twice in a single snapshot. This catches false positives like `Lord R` and `LordRawl` (similar names, same alliance, both appeared in Feb 8 snapshot). It also covers the related rule that two names in the same snapshot but **different alliances** can't be the same person.
+- **Power veto**: If the mean-power ratio (smaller / larger) is below `0.3` — i.e., one player consistently has less than ~30% of the other's power — they're never merged. Growth across the dataset's time range can't explain that gap.
+
+**Manual aliases**: `build_data.py` defines a `MANUAL_ALIASES` dict (`alias → canonical`) that force-links pairs the fuzzy matcher misses (e.g., stylistic renames like `VICTØR DA VÏNCI` → `VICTØR SNØW`, or `올루 ᴵᵘ` → `올루 olu`). Manual entries apply after the fuzzy loop and override veto rules. Add entries as Steve identifies miscategorizations; both names must appear in the source xlsx.
+
+**Known limitations** (`difflib.SequenceMatcher` at 0.70 quick-filter): misses stylistically dramatic name changes — the `MANUAL_ALIASES` dict is the escape hatch.
 
 ### Sparkline x-axis
 
@@ -180,176 +185,15 @@ Snapshots taken **on or after** an SVS prep end date get the ⚔️ marker in th
 
 ### Refreshing data from a new .xlsx
 
-When Steve uploads a new weekly snapshot, the data pipeline must run before the HTML can be updated. A reference Python script is included below — copy and run, then swap the resulting JSON into the HTML.
+When Steve uploads a new weekly snapshot, run the build script to regenerate `data.js`:
 
-```python
-import pandas as pd, json
-from difflib import SequenceMatcher
-from collections import Counter
-from datetime import date
-
-# === LOAD ===
-df = pd.read_excel('path/to/3174_Power_Levels.xlsx')
-df['Power'] = df['Power'].fillna(0).astype(int)
-df['Rank'] = df['Rank'].fillna('')
-df['Furnace'] = df['Furnace'].fillna('')
-df['Alliance'] = df['Alliance'].fillna('')
-df['State'] = df['State'].fillna('').astype(str).str.replace('.0','',regex=False)
-df['Date'] = df['Date'].fillna('').astype(str)
-df['Chief Name'] = df['Chief Name'].fillna('').astype(str).str.strip()
-
-# === FUZZY GROUPING ===
-names = df['Chief Name'].unique().tolist()
-def name_sim(a, b): return SequenceMatcher(None, a.lower(), b.lower()).ratio()
-def power_sim(pa, pb):
-    mx = max(pa, pb); return min(pa, pb) / mx if mx > 0 else 1.0
-
-name_stats = {}
-for n in names:
-    rows = df[df['Chief Name'] == n]
-    name_stats[n] = {
-        'power': rows['Power'].mean(),
-        'alliance': rows['Alliance'].mode()[0] if len(rows) and rows['Alliance'].any() else '',
-        'dates': set(rows['Date'].tolist())
-    }
-
-parent = {n: n for n in names}
-def find(x):
-    while parent[x] != x:
-        parent[x] = parent[parent[x]]
-        x = parent[x]
-    return x
-def union(a, b): parent[find(a)] = find(b)
-
-THRESHOLD = 0.82
-for i, a in enumerate(names):
-    sa = name_stats[a]
-    for b in names[i+1:]:
-        sb = name_stats[b]
-        ns = name_sim(a, b)
-        if ns < 0.70: continue
-        if sa['dates'] & sb['dates']: continue  # same-date veto
-        ps = power_sim(sa['power'], sb['power'])
-        same_alliance = (sa['alliance'] == sb['alliance'] and sa['alliance'] != '')
-        alliance_score = 1.0 if same_alliance else (0.3 if not sa['alliance'] or not sb['alliance'] else 0.0)
-        score = ns * 0.5 + ps * 0.3 + alliance_score * 0.2
-        if score >= THRESHOLD:
-            union(a, b)
-
-# === BUILD PLAYERS ===
-groups = {}
-for n in names:
-    groups.setdefault(find(n), []).append(n)
-
-players = []
-for root, members in groups.items():
-    rows = df[df['Chief Name'].isin(set(members))].sort_values('Date')
-    records = rows.to_dict(orient='records')
-    if not records: continue
-    canonical = Counter(r['Chief Name'] for r in records).most_common(1)[0][0]
-    variants = sorted(set(r['Chief Name'] for r in records))
-    players.append({
-        'name': canonical,
-        'variants': variants if len(variants) > 1 else [],
-        'latest': records[-1],
-        'records': records,
-        'sparkline': [[r['Date'], r['Power']] for r in records if r['Date']],
-        'count': len(records)
-    })
-
-# === SCORE: SVS PREP, EVENT, SLACKER ===
-PREP = [
-  (date(2026,1,26), date(2026,1,31)), (date(2026,2,23), date(2026,2,28)),
-  (date(2026,3,23), date(2026,3,28)), (date(2026,4,20), date(2026,4,25)),
-  (date(2026,5,18), date(2026,5,23)), (date(2026,6,15), date(2026,6,20)),
-  (date(2026,7,13), date(2026,7,18)), (date(2026,8,10), date(2026,8,15)),
-  (date(2026,9,7),  date(2026,9,12)), (date(2026,10,5), date(2026,10,10)),
-  (date(2026,11,2), date(2026,11,7)), (date(2026,11,30),date(2026,12,5)),
-]
-EVENTS_ALL = [
-  ('Gilded Jade',    date(2026,2,15), date(2026,2,21)),
-  ('Dawn Feast',     date(2026,3,6),  date(2026,3,12)),
-  ('Radiant Melody', date(2026,4,1),  date(2026,4,7)),
-]
-QUALIFYING = []
-for nm, es, ee in EVENTS_ALL:
-    for ps, pe in PREP:
-        if 0 < (es - pe).days <= 10:
-            QUALIFYING.append((nm, es, ee, ps, pe))
-            break
-
-def parse(s):
-    s = s.replace('.','-')
-    return date(int(s[:4]), int(s[5:7]), int(s[8:10]))
-
-def compute_rate(sparkline, rng_start, rng_end):
-    total_growth = 0.0; total_days = 0
-    for i in range(1, len(sparkline)):
-        d_prev = parse(sparkline[i-1][0]); d_curr = parse(sparkline[i][0])
-        gap = (d_curr - d_prev).days
-        if gap <= 0: continue
-        lo = max(d_prev, rng_start); hi = min(d_curr, rng_end)
-        overlap = (hi - lo).days + 1 if lo <= hi else 0
-        if overlap <= 0: continue
-        growth = sparkline[i][1] - sparkline[i-1][1]
-        total_growth += growth * (overlap / gap)
-        total_days += overlap
-    return (total_growth / total_days) if total_days > 0 else None
-
-for p in players:
-    sparkline = sorted(p['sparkline'], key=lambda s: s[0])
-    prep_growth = nonprep_growth = 0.0; prep_days = nonprep_days = 0
-    for i in range(1, len(sparkline)):
-        d_prev = parse(sparkline[i-1][0]); d_curr = parse(sparkline[i][0])
-        days = (d_curr - d_prev).days
-        if days <= 0: continue
-        growth = sparkline[i][1] - sparkline[i-1][1]
-        po = 0
-        for ps, pe in PREP:
-            lo = max(d_prev, ps); hi = min(d_curr, pe)
-            if lo <= hi: po += (hi - lo).days + 1
-        po = min(po, days); npo = days - po
-        prep_growth += growth * (po/days); nonprep_growth += growth * (npo/days)
-        prep_days += po; nonprep_days += npo
-
-    prep_rate = prep_growth / prep_days if prep_days > 0 else None
-    nonprep_rate = nonprep_growth / nonprep_days if nonprep_days > 0 else None
-    p['prep_rate'] = round(prep_rate, 2) if prep_rate is not None else None
-    p['nonprep_rate'] = round(nonprep_rate, 2) if nonprep_rate is not None else None
-    p['prep_days'] = prep_days; p['nonprep_days'] = nonprep_days
-
-    event_bonus = 0.0; ec = []
-    for ename, es, ee, ps, pe in QUALIFYING:
-        er = compute_rate(sparkline, es, ee); pr = compute_rate(sparkline, ps, pe)
-        if er is None or pr is None: continue
-        diff = er - pr
-        ec.append({'event': ename, 'event_start': es.isoformat(), 'event_end': ee.isoformat(),
-                   'event_rate': round(er, 2), 'prep_rate': round(pr, 2), 'diff': round(diff, 2)})
-        if diff > 0: event_bonus += diff
-    p['event_bonus'] = round(event_bonus, 2) if event_bonus > 0 else 0
-    p['event_comparisons'] = ec
-
-    # Slacker total — null if prep_rate is negative (player IS engaged)
-    if prep_rate is None or nonprep_rate is None or prep_rate < 0:
-        p['slacker_total'] = None
-    else:
-        p['slacker_total'] = round(nonprep_rate - prep_rate + event_bonus, 2)
-
-players.sort(key=lambda p: p['latest']['Power'], reverse=True)
-for i, p in enumerate(players): p['idx'] = i + 1
-
-# === EMIT ===
-with open('data.json', 'w', encoding='utf-8') as f:
-    json.dump(players, f, ensure_ascii=False, separators=(',',':'))
+```bash
+python3 build_data.py
 ```
 
-After running this, the resulting JSON replaces the value of `const DATA = ...` in the HTML between the markers:
+This reads `3174 Power Levels.xlsx` and writes `data.js` (`const DATA = [...]`). The script handles loading, fuzzy player grouping, SVS prep/non-prep rate computation, qualifying-event bonuses, slacker scoring, and ranking — see `build_data.py` for the implementation. Pass `python3 build_data.py INPUT.xlsx OUTPUT.js` to override the defaults.
 
-```
-const DATA = <PASTE HERE>;
-
-const ALLIANCE_COLORS = { ... };
-```
+Dependencies: `pandas`, `openpyxl` (`pip install pandas openpyxl`).
 
 ## When making changes
 
@@ -363,12 +207,9 @@ const ALLIANCE_COLORS = { ... };
 
 ```
 .
-├── CLAUDE.md                 # This file
-├── index.html                # The single-file dashboard
-├── power_levels_3174.html    # Mirror of index.html (legacy filename)
-├── power_levels_3174_v2.html # Mirror (cache-buster filename)
-└── data/
-    └── 3174_Power_Levels.xlsx  # Source data (weekly snapshots)
+├── CLAUDE.md                  # This file
+├── index.html                 # The dashboard
+├── data.js                    # `const DATA = [...]` loaded by index.html
+├── build_data.py              # Regenerates data.js from the xlsx
+└── 3174 Power Levels.xlsx     # Source data (weekly snapshots)
 ```
-
-The three `.html` files are byte-identical mirrors. If updating, update all three so cached shared links continue to serve the latest version.
