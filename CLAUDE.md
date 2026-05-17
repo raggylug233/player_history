@@ -160,9 +160,14 @@ combined_score = 0.5 × name_similarity      // difflib SequenceMatcher
 
 Names merge if `combined_score >= 0.82` AND `name_similarity >= 0.70` (quick filter).
 
-**Hard veto**: Two names that appear on the **same snapshot date** are never merged — they must be different players. This prevents false positives like `Lord R` and `LordRawl` (similar names, same alliance, but both appeared in Feb 8 snapshot so they can’t be the same person).
+**Hard vetos** (apply before scoring):
 
-**Known limitations** (`difflib.SequenceMatcher` at 0.80 threshold): misses stylistically dramatic name changes like `VICTØR DA VÏNCI` → `VICTØR SNØW`. Solution path when adding more data is a `manual_aliases` dict plus explicit deletion of bad fuzzy links.
+- **Same-date veto**: Two names that appear in the **same snapshot date** are never merged — one player can't be listed twice in a single snapshot. This catches false positives like `Lord R` and `LordRawl` (similar names, same alliance, both appeared in Feb 8 snapshot). It also covers the related rule that two names in the same snapshot but **different alliances** can't be the same person.
+- **Power veto**: If the mean-power ratio (smaller / larger) is below `0.3` — i.e., one player consistently has less than ~30% of the other's power — they're never merged. Growth across the dataset's time range can't explain that gap.
+
+**Manual aliases**: `build_data.py` defines a `MANUAL_ALIASES` dict (`alias → canonical`) that force-links pairs the fuzzy matcher misses (e.g., stylistic renames like `VICTØR DA VÏNCI` → `VICTØR SNØW`, or `올루 ᴵᵘ` → `올루 olu`). Manual entries apply after the fuzzy loop and override veto rules. Add entries as Steve identifies miscategorizations; both names must appear in the source xlsx.
+
+**Known limitations** (`difflib.SequenceMatcher` at 0.70 quick-filter): misses stylistically dramatic name changes — the `MANUAL_ALIASES` dict is the escape hatch.
 
 ### Sparkline x-axis
 

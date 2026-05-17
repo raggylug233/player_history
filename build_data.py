@@ -48,6 +48,14 @@ def power_sim(pa, pb):
     return min(pa, pb) / mx if mx > 0 else 1.0
 
 
+# Manual alias overrides for cases the fuzzy matcher misses (e.g., dramatic
+# stylistic renames like VICTØR DA VÏNCI → VICTØR SNØW). Maps alias → canonical;
+# both names must appear in the source xlsx. Applied after fuzzy grouping, so
+# manual entries override veto rules.
+MANUAL_ALIASES = {
+    "올루 ᴵᵘ": "올루 olu",
+}
+
 name_stats = {}
 for n in names:
     rows = df[df["Chief Name"] == n]
@@ -72,16 +80,29 @@ def union(a, b):
 
 
 THRESHOLD = 0.82
+POWER_VETO = 0.3  # mean-power ratio below this (one < 30% of the other) → never merge
+
 for i, a in enumerate(names):
     sa = name_stats[a]
     for b in names[i + 1:]:
         sb = name_stats[b]
+
         ns = name_sim(a, b)
         if ns < 0.70:
             continue
+
+        # Same-date veto: if a and b both appear in any snapshot, they must
+        # be different players (one person can't be listed twice in one snapshot).
+        # This also covers the "same timestamp in different alliances" case.
         if sa["dates"] & sb["dates"]:
-            continue  # same-date veto: can't be the same player
+            continue
+
+        # Power veto: vastly different mean power can't be the same player even
+        # accounting for growth across the dataset's time range.
         ps = power_sim(sa["power"], sb["power"])
+        if ps < POWER_VETO:
+            continue
+
         same_alliance = sa["alliance"] == sb["alliance"] and sa["alliance"] != ""
         alliance_score = (
             1.0 if same_alliance else (0.3 if not sa["alliance"] or not sb["alliance"] else 0.0)
@@ -89,6 +110,16 @@ for i, a in enumerate(names):
         score = ns * 0.5 + ps * 0.3 + alliance_score * 0.2
         if score >= THRESHOLD:
             union(a, b)
+
+# Manual alias overrides — force-union pairs the fuzzy matcher misses.
+for alias, canonical in MANUAL_ALIASES.items():
+    a_in = alias in parent
+    c_in = canonical in parent
+    if a_in and c_in:
+        union(alias, canonical)
+    else:
+        missing = [n for n, p in [(alias, a_in), (canonical, c_in)] if not p]
+        print(f"WARNING: manual alias {alias!r} → {canonical!r} skipped; not in xlsx: {missing}")
 
 # === BUILD PLAYERS ===
 groups = {}
