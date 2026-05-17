@@ -12,7 +12,7 @@ The dashboard is used by Steve (alliance leader of **BBL** in State 3174) for co
 
 ### Single-file HTML deliverable
 
-The entire app is a single self-contained HTML file (`index.html` / `power_levels_3174.html`). No build step, no external JS dependencies beyond Google Fonts. Data is embedded directly as a JavaScript constant.
+The app is a single HTML file (`index.html`) that loads its data from a sibling `data.js` (which defines `const DATA = [...]`). No build step, no external JS dependencies beyond Google Fonts.
 
 ```
 <source data .xlsx>
@@ -364,11 +364,8 @@ const ALLIANCE_COLORS = { ... };
 ```
 .
 ├── CLAUDE.md                 # This file
-├── index.html                # The single-file dashboard
-├── power_levels_3174.html    # Mirror of index.html (legacy filename)
-├── power_levels_3174_v2.html # Mirror (cache-buster filename)
+├── index.html                # The dashboard
+├── data.js                   # `const DATA = [...]` loaded by index.html
 └── data/
     └── 3174_Power_Levels.xlsx  # Source data (weekly snapshots)
 ```
-
-The three `.html` files are byte-identical mirrors. If updating, update all three so cached shared links continue to serve the latest version.
